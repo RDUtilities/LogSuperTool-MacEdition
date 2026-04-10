@@ -1,0 +1,36 @@
+# Xcode build artifacts
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# User-specific Xcode settings
+xcuserdata/
+
+# Build products
+*.o
+*.d
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# App bundle (never commit the .app)
+*.app
+
+# Crash logs
+*.crash
+.claude/

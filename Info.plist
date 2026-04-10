@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>LogSuperTool</string>
+
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright 2026 RDUtilities. MIT License.</string>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- ── File type associations ────────────────────────────────── -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <!-- Primary: .log files — make LogSuperTool the default handler -->
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>log</string>
+                <string>out</string>
+                <string>err</string>
+                <string>trace</string>
+                <string>debug</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>Log File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+        </dict>
+        <!-- Secondary: plain text files — appear in "Open With" but don't override TextEdit as default -->
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>txt</string>
+                <string>csv</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>Text File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Declare a custom UTI for .log so Finder shows our app icon on log files -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.rdutilities.log-file</string>
+            <key>UTTypeDescription</key>
+            <string>Log File</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>log</string>
+                    <string>out</string>
+                    <string>err</string>
+                    <string>trace</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>
