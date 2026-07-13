@@ -10,6 +10,7 @@ struct TimelineRow: View {
     @State private var jumpLine:     String = ""
     @State private var jumpTime:     String = ""
     @State private var jumpDate:     String = ""
+    @State private var timelineNavigationTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -22,9 +23,7 @@ struct TimelineRow: View {
             Slider(value: $sliderValue, in: 0...1)
                 .frame(minWidth: 120, maxWidth: 260)
                 .disabled(viewModel.timestampedLineNumbers.isEmpty)
-                .onChange(of: sliderValue) { newValue in
-                    viewModel.navigateTimeline(newValue)
-                }
+                .onChange(of: sliderValue) { _ in scheduleTimelineNavigation() }
                 .help(viewModel.timestampedLineNumbers.isEmpty
                       ? "No timestamps detected in this file"
                       : "Drag to navigate by time")
@@ -91,5 +90,17 @@ struct TimelineRow: View {
 
     private func commitJumpDate() {
         viewModel.jumpToDate(jumpDate)
+    }
+
+    /// A Slider can emit dozens of values per second. Coalescing them avoids
+    /// repeatedly asking ScrollViewReader to resolve a position in a large log.
+    private func scheduleTimelineNavigation() {
+        timelineNavigationTask?.cancel()
+        let position = sliderValue
+        timelineNavigationTask = Task {
+            try? await Task.sleep(nanoseconds: 75_000_000)
+            guard !Task.isCancelled else { return }
+            viewModel.navigateTimeline(position)
+        }
     }
 }

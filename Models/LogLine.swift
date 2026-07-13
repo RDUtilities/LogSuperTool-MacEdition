@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - LogSeverity
 
-enum LogSeverity: String, CaseIterable {
+enum LogSeverity: String, CaseIterable, Equatable {
     case none  = "None"
     case trace = "Trace"
     case debug = "Debug"
