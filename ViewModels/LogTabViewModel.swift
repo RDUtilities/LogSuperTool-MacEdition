@@ -96,6 +96,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private var operationID = UUID()
     private var firstLineByTime: [String: Int] = [:]
     private var firstLineByDate: [String: Int] = [:]
+    private var firstLineByDatePrefix: [String: Int] = [:]
     private var navigationHighlightTask: Task<Void, Never>?
 
     // MARK: - Init
@@ -128,6 +129,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         timestampedLineNumbers = []
         firstLineByTime = [:]
         firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
         lastOffset       = 0
 
         loadTask = Task {
@@ -192,6 +194,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         timestampedLineNumbers = []
         firstLineByTime = [:]
         firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
         excludeText      = ""
         lastOffset       = 0
         loadError        = nil
@@ -443,7 +446,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
     func jumpToDate(_ dateString: String) {
         let key = dateString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let lineNumber = firstLineByDate[key] else { return }
+        guard let lineNumber = firstLineByDate[key] ?? firstLineByDatePrefix[key] else { return }
         jumpToLine(lineNumber)
     }
 
@@ -516,6 +519,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private func rebuildJumpIndexes() {
         firstLineByTime = [:]
         firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
         addToJumpIndexes(allLines)
     }
 
@@ -523,6 +527,13 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         for line in lines {
             if !line.dateString.isEmpty, firstLineByDate[line.dateString] == nil {
                 firstLineByDate[line.dateString] = line.lineNumber
+                var datePrefix = ""
+                for character in line.dateString {
+                    datePrefix.append(character)
+                    if firstLineByDatePrefix[datePrefix] == nil {
+                        firstLineByDatePrefix[datePrefix] = line.lineNumber
+                    }
+                }
             }
             let timeKey = String(line.timeString.prefix(8))
             if !timeKey.isEmpty, firstLineByTime[timeKey] == nil {

@@ -63,14 +63,14 @@ struct TimelineRow: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            TextField("yyyy-MM-dd", text: $jumpDate)
+            TextField("yyyy-MM or yyyy-MM-dd", text: $jumpDate)
                 .frame(width: 96)
                 .multilineTextAlignment(.center)
                 .onSubmit { commitJumpDate() }
             Button("Go") { commitJumpDate() }
                 .controlSize(.small)
                 .disabled(jumpDate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Go to the first matching date")
+                .help("Go to the first matching date or date prefix")
 
             Spacer()
         }
