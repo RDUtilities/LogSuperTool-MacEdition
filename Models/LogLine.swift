@@ -39,21 +39,24 @@ struct LogLine: Identifiable, Sendable {
     let lineNumber:  Int
     let text:        String
     let severity:    LogSeverity
-    let timestamp:   Date?
+    /// Whether the parser found a recognizable date. The timeline only needs
+    /// this flag; eagerly constructing a Date for every record is expensive
+    /// and does not add anything to the current UI.
+    let hasTimestamp: Bool
     let dateString:  String
     let timeString:  String
 
     init(lineNumber: Int,
          text:       String,
          severity:   LogSeverity = .none,
-         timestamp:  Date?       = nil,
+         hasTimestamp: Bool      = false,
          dateString: String      = "",
          timeString: String      = "")
     {
         self.lineNumber = lineNumber
         self.text       = text
         self.severity   = severity
-        self.timestamp  = timestamp
+        self.hasTimestamp = hasTimestamp
         self.dateString = dateString
         self.timeString = timeString
     }

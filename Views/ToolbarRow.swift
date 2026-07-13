@@ -57,13 +57,13 @@ struct ToolbarRow: View {
                 toolbarButton("Prev Err", systemImage: "chevron.up.circle") {
                     viewModel.prevError()
                 }
-                .disabled(viewModel.problemLines.isEmpty)
+                .disabled(viewModel.problemLineNumbers.isEmpty)
                 .keyboardShortcut("[", modifiers: [.command, .option])
 
                 toolbarButton("Next Err", systemImage: "chevron.down.circle") {
                     viewModel.nextError()
                 }
-                .disabled(viewModel.problemLines.isEmpty)
+                .disabled(viewModel.problemLineNumbers.isEmpty)
                 .keyboardShortcut("]", modifiers: [.command, .option])
             }
 

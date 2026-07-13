@@ -34,19 +34,6 @@ final class LogFileLoader: @unchecked Sendable {
     private static let monthNameRx = try! NSRegularExpression(pattern: #"(\d{1,2}-[A-Za-z]{3}-\d{4})"#)
     private static let timeRx      = try! NSRegularExpression(pattern: #"\b(\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\b"#)
 
-    private static let dateFormats = [
-        "yyyy-MM-dd HH:mm:ss.SSS",
-        "yyyy-MM-dd HH:mm:ss,SSS",
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-dd",
-        "MM/dd/yyyy HH:mm:ss.SSS",
-        "MM/dd/yyyy HH:mm:ss",
-        "MM/dd/yyyy",
-        "dd-MMM-yyyy HH:mm:ss.SSS",
-        "dd-MMM-yyyy HH:mm:ss",
-        "dd-MMM-yyyy",
-    ]
-
     // MARK: - Public API
 
     /// Stream lines from a large file in batches without ever loading the whole
@@ -56,7 +43,6 @@ final class LogFileLoader: @unchecked Sendable {
                      deferUnterminatedFinalLine: Bool = false) -> AsyncThrowingStream<LineBatch, Error> {
         AsyncThrowingStream { continuation in
             Task.detached(priority: .userInitiated) {
-                let formatters = LogFileLoader.makeDateFormatters()
                 do {
                     let fh = try FileHandle(forReadingFrom: url)
                     defer { try? fh.close() }
@@ -89,9 +75,9 @@ final class LogFileLoader: @unchecked Sendable {
                             guard !text.isEmpty else { lineNumber += 1; continue }
 
                             let sev = LogFileLoader.detectSeverity(text)
-                            let (ts, dateS, timeS) = LogFileLoader.extractTimestamp(text, formatters: formatters)
+                            let (hasTimestamp, dateS, timeS) = LogFileLoader.extractTimestamp(text)
                             batch.append(LogLine(lineNumber: lineNumber, text: text,
-                                                 severity: sev, timestamp: ts,
+                                                 severity: sev, hasTimestamp: hasTimestamp,
                                                  dateString: dateS, timeString: timeS))
                             lineNumber += 1
 
@@ -122,9 +108,9 @@ final class LogFileLoader: @unchecked Sendable {
                         let text = raw.last == "\r" ? String(raw.dropLast()) : raw
                         if !text.isEmpty {
                             let sev = LogFileLoader.detectSeverity(text)
-                            let (ts, dateS, timeS) = LogFileLoader.extractTimestamp(text, formatters: formatters)
+                            let (hasTimestamp, dateS, timeS) = LogFileLoader.extractTimestamp(text)
                             batch.append(LogLine(lineNumber: lineNumber, text: text,
-                                                 severity: sev, timestamp: ts,
+                                                 severity: sev, hasTimestamp: hasTimestamp,
                                                  dateString: dateS, timeString: timeS))
                         }
                     }
@@ -152,13 +138,12 @@ final class LogFileLoader: @unchecked Sendable {
         return try await Task.detached(priority: .utility) {
             let fh   = try FileHandle(forReadingFrom: url)
             let size = Int64(fh.seekToEndOfFile())
-            let formatters = LogFileLoader.makeDateFormatters()
 
             if offset > size {
                 fh.seek(toFileOffset: 0)
                 let data = fh.readDataToEndOfFile()
                 fh.closeFile()
-                let parsed = LogFileLoader.parseCompleteLines(data, startLine: 1, formatters: formatters)
+                let parsed = LogFileLoader.parseCompleteLines(data, startLine: 1)
                 return TailReadBatch(nextOffset: Int64(parsed.consumedByteCount), lines: parsed.lines, wasTruncated: true)
             }
             guard offset < size else {
@@ -168,7 +153,7 @@ final class LogFileLoader: @unchecked Sendable {
             fh.seek(toFileOffset: UInt64(offset))
             let data = fh.readDataToEndOfFile()
             fh.closeFile()
-            let parsed = LogFileLoader.parseCompleteLines(data, startLine: startLineNumber, formatters: formatters)
+            let parsed = LogFileLoader.parseCompleteLines(data, startLine: startLineNumber)
             return TailReadBatch(
                 nextOffset: offset + Int64(parsed.consumedByteCount),
                 lines: parsed.lines,
@@ -179,8 +164,7 @@ final class LogFileLoader: @unchecked Sendable {
 
     // MARK: - Private helpers
 
-    private static func parseCompleteLines(_ data: Data, startLine: Int,
-                                           formatters: [DateFormatter]) -> ParsedTailLines {
+    private static func parseCompleteLines(_ data: Data, startLine: Int) -> ParsedTailLines {
         var result = [LogLine]()
         var lineNumber = startLine
         var start = data.startIndex
@@ -195,9 +179,9 @@ final class LogFileLoader: @unchecked Sendable {
             let text = raw.last == "\r" ? String(raw.dropLast()) : raw
             guard !text.isEmpty else { lineNumber += 1; continue }
             let sev = detectSeverity(text)
-            let (ts, dateS, timeS) = extractTimestamp(text, formatters: formatters)
+            let (hasTimestamp, dateS, timeS) = extractTimestamp(text)
             result.append(LogLine(lineNumber: lineNumber, text: text,
-                                  severity: sev, timestamp: ts,
+                                  severity: sev, hasTimestamp: hasTimestamp,
                                   dateString: dateS, timeString: timeS))
             lineNumber += 1
         }
@@ -221,8 +205,7 @@ final class LogFileLoader: @unchecked Sendable {
         return .none
     }
 
-    private static func extractTimestamp(_ text: String,
-                                         formatters: [DateFormatter]) -> (Date?, String, String) {
+    private static func extractTimestamp(_ text: String) -> (Bool, String, String) {
         let ns    = text as NSString
         let range = NSRange(location: 0, length: ns.length)
 
@@ -240,27 +223,6 @@ final class LogFileLoader: @unchecked Sendable {
             timeStr = ns.substring(with: m.range(at: 1))
         }
 
-        guard !dateStr.isEmpty else { return (nil, "", timeStr) }
-        let combined = timeStr.isEmpty ? dateStr : "\(dateStr) \(timeStr)"
-        let date = parseDate(combined, formatters: formatters)
-        return (date, dateStr, timeStr)
-    }
-
-    private static func parseDate(_ s: String, formatters: [DateFormatter]) -> Date? {
-        for fmt in formatters {
-            if let d = fmt.date(from: s) { return d }
-        }
-        return nil
-    }
-
-    /// Create one DateFormatter per supported format. Call once per parse session,
-    /// not once per line.
-    private static func makeDateFormatters() -> [DateFormatter] {
-        dateFormats.map { format in
-            let f = DateFormatter()
-            f.locale     = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = format
-            return f
-        }
+        return (!dateStr.isEmpty, dateStr, timeStr)
     }
 }

@@ -11,7 +11,7 @@ A fast, native macOS log viewer built with Swift and SwiftUI. Designed for devel
 ## Features
 
 ### Performance
-- **Streaming file reader** — opens multi-GB log files without loading them fully into memory
+- **Chunked file reader** — reads and indexes logs progressively, so the interface stays responsive while a file loads
 - **Background filtering** — search and filter run off the main thread with 250ms debounce
 - **Progressive loading** — first lines appear immediately with a live progress bar
 

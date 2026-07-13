@@ -21,11 +21,11 @@ struct TimelineRow: View {
 
             Slider(value: $sliderValue, in: 0...1)
                 .frame(minWidth: 120, maxWidth: 260)
-                .disabled(viewModel.timestampedLines.isEmpty)
+                .disabled(viewModel.timestampedLineNumbers.isEmpty)
                 .onChange(of: sliderValue) { newValue in
                     viewModel.navigateTimeline(newValue)
                 }
-                .help(viewModel.timestampedLines.isEmpty
+                .help(viewModel.timestampedLineNumbers.isEmpty
                       ? "No timestamps detected in this file"
                       : "Drag to navigate by time")
 
