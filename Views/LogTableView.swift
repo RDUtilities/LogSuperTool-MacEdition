@@ -12,11 +12,13 @@ struct LogTableView: View {
     var body: some View {
         ScrollViewReader { proxy in
             List(viewModel.visibleLines, id: \.lineNumber, selection: $selectedLines) { line in
+                let presentation = rowPresentation(for: line)
                 LogRowView(
                     line: line,
-                    presentation: rowPresentation(for: line)
+                    presentation: presentation
                 )
                 .equatable()
+                    .listRowBackground(presentation.background.color)
                     .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                     .listRowSeparator(.hidden)
             }
@@ -216,6 +218,5 @@ private struct LogRowView: View, Equatable {
         .padding(.vertical, 1)
         .font(Font(NSFont(name: presentation.fontName, size: presentation.fontSize)
                    ?? NSFont.monospacedSystemFont(ofSize: presentation.fontSize, weight: .regular)))
-        .listRowBackground(presentation.background.color)
     }
 }
