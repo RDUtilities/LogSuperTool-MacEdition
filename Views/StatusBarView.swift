@@ -50,9 +50,9 @@ struct StatusBarView: View {
             }
 
             // Problem count
-            if !viewModel.problemLines.isEmpty {
+            if !viewModel.problemLineNumbers.isEmpty {
                 statusDivider()
-                Label("\(viewModel.problemLines.count) problems",
+                Label("\(viewModel.problemLineNumbers.count) problems",
                       systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
                     .foregroundColor(.red)

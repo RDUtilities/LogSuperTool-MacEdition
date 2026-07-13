@@ -15,8 +15,8 @@ private struct FilterSnapshot: Sendable {
 }
 
 private struct FilterResult: Sendable {
-    let lines:    [LogLine]
-    let matchSet: Set<Int>
+    let lines:             [LogLine]
+    let matchLineNumbers:  [Int]
 }
 
 // MARK: - LogTabViewModel
@@ -49,6 +49,8 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     @Published private(set) var searchMatchCount:       Int      = 0
     @Published private(set) var searchMatchSet:         Set<Int> = []
     @Published private(set) var currentSearchMatchIndex: Int     = -1
+    @Published private(set) var navigationHighlightLines: Set<Int> = []
+    private var searchMatchLineNumbers: [Int] = []
 
     // MARK: Selection
     @Published private(set) var selectedLine: LogLine? = nil
@@ -56,14 +58,13 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     func selectLine(lineNumber: Int?) {
         guard let n = lineNumber else { selectedLine = nil; return }
         selectedLine = visibleLines.first { $0.lineNumber == n }
-                    ?? allLines.first     { $0.lineNumber == n }
     }
 
     // MARK: Bookmarks
     @Published private(set) var bookmarkedLines: Set<Int> = []
 
     // MARK: Problem navigation
-    @Published private(set) var problemLines:        [LogLine] = []
+    @Published private(set) var problemLineNumbers:  [Int] = []
     @Published private(set) var currentProblemIndex: Int       = -1
 
     // MARK: Tail
@@ -71,7 +72,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     @Published var autoScroll: Bool = false
 
     // MARK: Timeline
-    @Published var timestampedLines: [LogLine] = []
+    @Published private(set) var timestampedLineNumbers: [Int] = []
 
     // MARK: Column visibility
     @Published var showLineNumbers: Bool = true
@@ -92,6 +93,11 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private var tailTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
     private var lastOffset: Int64 = 0
+    private var operationID = UUID()
+    private var firstLineByTime: [String: Int] = [:]
+    private var firstLineByDate: [String: Int] = [:]
+    private var firstLineByDatePrefix: [String: Int] = [:]
+    private var navigationHighlightTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -101,6 +107,9 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     // MARK: - File Operations
 
     func loadFile(url: URL) async {
+        let operationID = UUID()
+        self.operationID = operationID
+        let resumeTailing = isTailing
         loadTask?.cancel()
         filterTask?.cancel()
         stopTailing()
@@ -113,8 +122,14 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         visibleLines     = []
         searchMatchSet   = []
         searchMatchCount = 0
-        problemLines     = []
-        timestampedLines = []
+        searchMatchLineNumbers = []
+        navigationHighlightLines = []
+        navigationHighlightTask?.cancel()
+        problemLineNumbers = []
+        timestampedLineNumbers = []
+        firstLineByTime = [:]
+        firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
         lastOffset       = 0
 
         loadTask = Task {
@@ -122,9 +137,13 @@ final class LogTabViewModel: ObservableObject, Identifiable {
             loadError = nil
             do {
                 var isFirstBatch = true
-                for try await batch in loader.streamLines(from: url) {
-                    guard !Task.isCancelled else { break }
+                for try await batch in loader.streamLines(
+                    from: url,
+                    deferUnterminatedFinalLine: resumeTailing
+                ) {
+                    guard !Task.isCancelled, operationID == self.operationID else { return }
                     allLines.append(contentsOf: batch.lines)
+                    lastOffset = batch.tailOffset
                     if totalBytes > 0 {
                         loadProgress = min(Double(batch.bytesRead) / Double(totalBytes), 0.99)
                     }
@@ -133,17 +152,21 @@ final class LogTabViewModel: ObservableObject, Identifiable {
                         applySearchAndFilter()
                     }
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, operationID == self.operationID else { return }
                 loadProgress = 1.0
                 applySearchAndFilter()
                 rebuildProblemLines()
                 rebuildTimestampedLines()
             } catch {
-                loadError = error.localizedDescription
-                print("[LogTabViewModel] load error: \(error)")
+                if operationID == self.operationID {
+                    loadError = error.localizedDescription
+                    print("[LogTabViewModel] load error: \(error)")
+                }
             }
-            lastOffset = fileSizeOf(url)
-            isLoading  = false
+            guard operationID == self.operationID else { return }
+            if !resumeTailing { lastOffset = fileSizeOf(url) }
+            isLoading = false
+            if resumeTailing && !Task.isCancelled { startTailLoop(operationID: operationID) }
         }
         await loadTask?.value
     }
@@ -154,6 +177,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     }
 
     func closeFile() {
+        operationID = UUID()
         loadTask?.cancel()
         filterTask?.cancel()
         stopTailing()
@@ -163,8 +187,14 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         visibleLines     = []
         searchMatchSet   = []
         searchMatchCount = 0
-        problemLines     = []
-        timestampedLines = []
+        searchMatchLineNumbers = []
+        navigationHighlightLines = []
+        navigationHighlightTask?.cancel()
+        problemLineNumbers = []
+        timestampedLineNumbers = []
+        firstLineByTime = [:]
+        firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
         excludeText      = ""
         lastOffset       = 0
         loadError        = nil
@@ -202,12 +232,13 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
     private func applyFilterResult(_ result: FilterResult) {
         visibleLines     = result.lines
-        searchMatchSet   = result.matchSet
-        searchMatchCount = result.matchSet.count
-        if result.matchSet.isEmpty {
+        searchMatchSet   = Set(result.matchLineNumbers)
+        searchMatchCount = result.matchLineNumbers.count
+        searchMatchLineNumbers = result.matchLineNumbers
+        if result.matchLineNumbers.isEmpty {
             currentSearchMatchIndex = -1
-        } else if currentSearchMatchIndex >= result.matchSet.count {
-            currentSearchMatchIndex = result.matchSet.count - 1
+        } else if currentSearchMatchIndex >= result.matchLineNumbers.count {
+            currentSearchMatchIndex = result.matchLineNumbers.count - 1
         }
     }
 
@@ -221,192 +252,241 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     /// Runs entirely off the main actor.
     private static func computeFilter(_ snap: FilterSnapshot) async -> FilterResult {
         await Task.detached(priority: .userInitiated) {
-            var result = snap.lines
+            let filterRegex = snap.useRegex && !snap.filterText.isEmpty
+                ? LogRegex.expression(pattern: snap.filterText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
+            let excludeRegex = snap.useRegex && !snap.excludeText.isEmpty
+                ? LogRegex.expression(pattern: snap.excludeText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
+            let searchRegex = snap.useRegex && !snap.searchText.isEmpty
+                ? LogRegex.expression(pattern: snap.searchText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
 
-            if snap.onlyErrors {
-                result = result.filter { $0.severity.isProblem }
+            // An invalid regex must not silently become a literal filter.
+            if snap.useRegex && ((!snap.filterText.isEmpty && filterRegex == nil)
+                || (!snap.excludeText.isEmpty && excludeRegex == nil)) {
+                return FilterResult(lines: [], matchLineNumbers: [])
             }
+            if !snap.onlyErrors && snap.filterText.isEmpty && snap.excludeText.isEmpty && snap.searchText.isEmpty {
+                return FilterResult(lines: snap.lines, matchLineNumbers: [])
+            }
+            let options: String.CompareOptions = snap.isCaseSensitive
+                ? [.literal] : [.caseInsensitive, .literal]
+            var lines = [LogLine]()
+            lines.reserveCapacity(snap.lines.count)
+            var matchLineNumbers = [Int]()
 
-            if !snap.filterText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.filterText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
-                    result = result.filter { line in
-                        let ns = line.text as NSString
-                        return rx.firstMatch(in: line.text,
-                                             range: NSRange(location: 0, length: ns.length)) != nil
-                    }
+            // Perform all predicates in one pass. The previous chain of filters
+            // allocated and scanned the complete collection up to four times.
+            for line in snap.lines {
+                if snap.onlyErrors && !line.severity.isProblem { continue }
+
+                let text = line.text
+                let includesFilter: Bool
+                if snap.filterText.isEmpty {
+                    includesFilter = true
+                } else if let regex = filterRegex {
+                    includesFilter = regex.firstMatch(
+                        in: text,
+                        range: NSRange(location: 0, length: (text as NSString).length)
+                    ) != nil
                 } else {
-                    let opts: String.CompareOptions = snap.isCaseSensitive
-                        ? [.literal] : [.caseInsensitive, .literal]
-                    result = result.filter { $0.text.range(of: snap.filterText, options: opts) != nil }
+                    includesFilter = text.range(of: snap.filterText, options: options) != nil
+                }
+                guard includesFilter else { continue }
+
+                let isExcluded: Bool
+                if snap.excludeText.isEmpty {
+                    isExcluded = false
+                } else if let regex = excludeRegex {
+                    isExcluded = regex.firstMatch(
+                        in: text,
+                        range: NSRange(location: 0, length: (text as NSString).length)
+                    ) != nil
+                } else {
+                    isExcluded = text.range(of: snap.excludeText, options: options) != nil
+                }
+                guard !isExcluded else { continue }
+
+                lines.append(line)
+                if !snap.searchText.isEmpty {
+                    let matches: Bool
+                    if snap.useRegex, let regex = searchRegex {
+                        matches = regex.firstMatch(
+                            in: text,
+                            range: NSRange(location: 0, length: (text as NSString).length)
+                        ) != nil
+                    } else if snap.useRegex {
+                        matches = false
+                    } else {
+                        matches = text.range(of: snap.searchText, options: options) != nil
+                    }
+                    if matches { matchLineNumbers.append(line.lineNumber) }
                 }
             }
 
-            // Exclude filter — remove lines that match
-            if !snap.excludeText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.excludeText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
-                    result = result.filter { line in
-                        let ns = line.text as NSString
-                        return rx.firstMatch(in: line.text,
-                                             range: NSRange(location: 0, length: ns.length)) == nil
-                    }
-                } else {
-                    let opts: String.CompareOptions = snap.isCaseSensitive
-                        ? [.literal] : [.caseInsensitive, .literal]
-                    result = result.filter { $0.text.range(of: snap.excludeText, options: opts) == nil }
-                }
-            }
-
-            var matchSet = Set<Int>()
-            if !snap.searchText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.searchText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
-                    for line in result {
-                        let ns = line.text as NSString
-                        if rx.firstMatch(in: line.text,
-                                         range: NSRange(location: 0, length: ns.length)) != nil {
-                            matchSet.insert(line.lineNumber)
-                        }
-                    }
-                } else {
-                    let opts: String.CompareOptions = snap.isCaseSensitive
-                        ? [.literal] : [.caseInsensitive, .literal]
-                    for line in result where line.text.range(of: snap.searchText, options: opts) != nil {
-                        matchSet.insert(line.lineNumber)
-                    }
-                }
-            }
-
-            return FilterResult(lines: result, matchSet: matchSet)
+            return FilterResult(lines: lines, matchLineNumbers: matchLineNumbers)
         }.value
-    }
-
-    private func makeRegex(_ pattern: String) -> NSRegularExpression? {
-        var opts: NSRegularExpression.Options = []
-        if !isCaseSensitive { opts.insert(.caseInsensitive) }
-        return try? NSRegularExpression(pattern: pattern, options: opts)
     }
 
     // MARK: - Search Navigation
 
     func findNext() {
-        let matches = matchedIndices()
+        let matches = searchMatchLineNumbers
         guard !matches.isEmpty else { return }
-        let next = matches.first(where: { $0 > currentSearchMatchIndex }) ?? matches[0]
-        currentSearchMatchIndex = next
-        scrollToLineRequested?(visibleLines[next].lineNumber)
+        currentSearchMatchIndex = (currentSearchMatchIndex + 1) % matches.count
+        scrollToLineRequested?(matches[currentSearchMatchIndex])
     }
 
     func findPrev() {
-        let matches = matchedIndices()
+        let matches = searchMatchLineNumbers
         guard !matches.isEmpty else { return }
-        let prev = matches.last(where: { $0 < currentSearchMatchIndex }) ?? matches[matches.count - 1]
-        currentSearchMatchIndex = prev
-        scrollToLineRequested?(visibleLines[prev].lineNumber)
-    }
-
-    private func matchedIndices() -> [Int] {
-        visibleLines.indices.filter { searchMatchSet.contains(visibleLines[$0].lineNumber) }
+        currentSearchMatchIndex = currentSearchMatchIndex < 0
+            ? matches.count - 1
+            : (currentSearchMatchIndex - 1 + matches.count) % matches.count
+        scrollToLineRequested?(matches[currentSearchMatchIndex])
     }
 
     // MARK: - Problem Navigation
 
     private func rebuildProblemLines() {
-        problemLines = allLines.filter { $0.severity.isProblem }
+        problemLineNumbers = allLines.compactMap { $0.severity.isProblem ? $0.lineNumber : nil }
     }
 
     func nextError() {
-        guard !problemLines.isEmpty else { return }
-        let curLine = currentProblemIndex >= 0 ? problemLines[currentProblemIndex].lineNumber : 0
-        if let idx = problemLines.firstIndex(where: { $0.lineNumber > curLine }) {
+        guard !problemLineNumbers.isEmpty else { return }
+        let curLine = currentProblemIndex >= 0 ? problemLineNumbers[currentProblemIndex] : 0
+        if let idx = problemLineNumbers.firstIndex(where: { $0 > curLine }) {
             currentProblemIndex = idx
         } else {
             currentProblemIndex = 0
         }
-        scrollToLineRequested?(problemLines[currentProblemIndex].lineNumber)
+        scrollToLineRequested?(problemLineNumbers[currentProblemIndex])
     }
 
     func prevError() {
-        guard !problemLines.isEmpty else { return }
-        let curLine = currentProblemIndex >= 0 ? problemLines[currentProblemIndex].lineNumber : Int.max
-        if let idx = problemLines.lastIndex(where: { $0.lineNumber < curLine }) {
+        guard !problemLineNumbers.isEmpty else { return }
+        let curLine = currentProblemIndex >= 0 ? problemLineNumbers[currentProblemIndex] : Int.max
+        if let idx = problemLineNumbers.lastIndex(where: { $0 < curLine }) {
             currentProblemIndex = idx
         } else {
-            currentProblemIndex = problemLines.count - 1
+            currentProblemIndex = problemLineNumbers.count - 1
         }
-        scrollToLineRequested?(problemLines[currentProblemIndex].lineNumber)
+        scrollToLineRequested?(problemLineNumbers[currentProblemIndex])
     }
 
     // MARK: - Timeline
 
     private func rebuildTimestampedLines() {
-        timestampedLines = allLines.filter { $0.timestamp != nil }
+        timestampedLineNumbers = allLines.compactMap { $0.hasTimestamp ? $0.lineNumber : nil }
+        rebuildJumpIndexes()
+    }
+
+    private func updateDerivedStateAfterTailAppend(_ lines: [LogLine]) {
+        guard !lines.isEmpty else { return }
+
+        problemLineNumbers.append(contentsOf: lines.compactMap { $0.severity.isProblem ? $0.lineNumber : nil })
+        timestampedLineNumbers.append(contentsOf: lines.compactMap { $0.hasTimestamp ? $0.lineNumber : nil })
+        addToJumpIndexes(lines)
+
+        if !filterText.isEmpty || !excludeText.isEmpty || onlyErrors {
+            applySearchAndFilter()
+            return
+        }
+
+        visibleLines.append(contentsOf: lines)
+        guard !searchText.isEmpty else { return }
+
+        let matches: (LogLine) -> Bool
+        if useRegex {
+            guard let regex = LogRegex.expression(pattern: searchText, isCaseSensitive: isCaseSensitive) else { return }
+            matches = { line in
+                let range = NSRange(location: 0, length: (line.text as NSString).length)
+                return regex.firstMatch(in: line.text, range: range) != nil
+            }
+        } else {
+            let options: String.CompareOptions = isCaseSensitive ? [.literal] : [.caseInsensitive, .literal]
+            matches = { $0.text.range(of: self.searchText, options: options) != nil }
+        }
+
+        for line in lines where matches(line) {
+            searchMatchSet.insert(line.lineNumber)
+        }
+        searchMatchCount = searchMatchSet.count
     }
 
     func navigateTimeline(_ position: Double) {
-        guard !timestampedLines.isEmpty else { return }
-        let idx = min(Int(position * Double(timestampedLines.count - 1)),
-                      timestampedLines.count - 1)
-        scrollToLineRequested?(timestampedLines[max(0, idx)].lineNumber)
+        guard !timestampedLineNumbers.isEmpty else { return }
+        let idx = min(Int(position * Double(timestampedLineNumbers.count - 1)),
+                      timestampedLineNumbers.count - 1)
+        navigate(to: timestampedLineNumbers[max(0, idx)])
     }
 
     func jumpToLine(_ lineNumber: Int) {
-        if let match = visibleLines.first(where: { $0.lineNumber == lineNumber }) {
-            scrollToLineRequested?(match.lineNumber)
-        } else if let nearest = visibleLines.min(by: {
-            abs($0.lineNumber - lineNumber) < abs($1.lineNumber - lineNumber)
-        }) {
-            scrollToLineRequested?(nearest.lineNumber)
+        guard !visibleLines.isEmpty else { return }
+        let insertion = visibleLines.partitioningIndex { $0.lineNumber < lineNumber }
+        if insertion < visibleLines.count, visibleLines[insertion].lineNumber == lineNumber {
+            navigate(to: lineNumber)
+        } else if insertion == 0 {
+            navigate(to: visibleLines[0].lineNumber)
+        } else if insertion == visibleLines.count {
+            navigate(to: visibleLines[visibleLines.count - 1].lineNumber)
+        } else {
+            let previous = visibleLines[insertion - 1].lineNumber
+            let next = visibleLines[insertion].lineNumber
+            navigate(to: abs(previous - lineNumber) <= abs(next - lineNumber) ? previous : next)
         }
     }
 
     func jumpToTime(_ timeString: String) {
-        guard let target = allLines.first(where: { $0.timeString.hasPrefix(timeString) }) else { return }
-        jumpToLine(target.lineNumber)
+        let key = timeString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lineNumber = firstLineByTime[key] else { return }
+        jumpToLine(lineNumber)
     }
 
     func jumpToDate(_ dateString: String) {
-        guard let target = allLines.first(where: { $0.dateString == dateString }) else { return }
-        jumpToLine(target.lineNumber)
+        let key = dateString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lineNumber = firstLineByDate[key] ?? firstLineByDatePrefix[key] else { return }
+        jumpToLine(lineNumber)
     }
 
     // MARK: - Tail
 
     private func startTailing() {
         guard let url = fileURL else { return }
+        Task { await loadFile(url: url) }
+    }
+
+    private func startTailLoop(operationID: UUID) {
+        guard let url = fileURL, isTailing else { return }
         tailTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, operationID == self.operationID else { break }
                 do {
                     let batch = try await loader.readAppendedLines(
                         from:            url,
                         offset:          lastOffset,
                         startLineNumber: (allLines.last?.lineNumber ?? 0) + 1
                     )
-                    guard !Task.isCancelled else { break }
+                    guard !Task.isCancelled, operationID == self.operationID else { break }
 
                     if batch.wasTruncated {
                         allLines   = batch.lines
                         lastOffset = batch.nextOffset
-                    } else if !batch.lines.isEmpty {
-                        allLines.append(contentsOf: batch.lines)
+                        applySearchAndFilter()
+                        rebuildProblemLines()
+                        rebuildTimestampedLines()
+                    } else {
                         lastOffset = batch.nextOffset
-                        for line in batch.lines where line.severity.isProblem {
-                            newProblemDetected?(line)
+                        if !batch.lines.isEmpty {
+                            allLines.append(contentsOf: batch.lines)
+                            for line in batch.lines where line.severity.isProblem {
+                                newProblemDetected?(line)
+                            }
+                            updateDerivedStateAfterTailAppend(batch.lines)
                         }
                     }
-
-                    applySearchAndFilter()
-                    rebuildProblemLines()
-                    rebuildTimestampedLines()
 
                     if autoScroll, let last = visibleLines.last {
                         scrollToLineRequested?(last.lineNumber)
@@ -421,6 +501,45 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private func stopTailing() {
         tailTask?.cancel()
         tailTask = nil
+    }
+
+    /// Scroll to a record and make the destination obvious without changing
+    /// the user's saved highlights or search results.
+    private func navigate(to lineNumber: Int) {
+        navigationHighlightTask?.cancel()
+        navigationHighlightLines = [lineNumber]
+        scrollToLineRequested?(lineNumber)
+        navigationHighlightTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.navigationHighlightLines = []
+        }
+    }
+
+    private func rebuildJumpIndexes() {
+        firstLineByTime = [:]
+        firstLineByDate = [:]
+        firstLineByDatePrefix = [:]
+        addToJumpIndexes(allLines)
+    }
+
+    private func addToJumpIndexes(_ lines: [LogLine]) {
+        for line in lines {
+            if !line.dateString.isEmpty, firstLineByDate[line.dateString] == nil {
+                firstLineByDate[line.dateString] = line.lineNumber
+                var datePrefix = ""
+                for character in line.dateString {
+                    datePrefix.append(character)
+                    if firstLineByDatePrefix[datePrefix] == nil {
+                        firstLineByDatePrefix[datePrefix] = line.lineNumber
+                    }
+                }
+            }
+            let timeKey = String(line.timeString.prefix(8))
+            if !timeKey.isEmpty, firstLineByTime[timeKey] == nil {
+                firstLineByTime[timeKey] = line.lineNumber
+            }
+        }
     }
 
     // MARK: - Bookmark Navigation
@@ -468,10 +587,9 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     func exportCSV() -> String {
         var rows = ["Line,Severity,Date,Time,Message"]
         for line in visibleLines {
-            let msg = line.text.replacingOccurrences(of: "\"", with: "\"\"")
             rows.append(
-                "\(line.lineNumber),\(line.severity.rawValue),"
-                + "\"\(line.dateString)\",\"\(line.timeString)\",\"\(msg)\""
+                "\(line.lineNumber),\(LogLine.csvField(line.severity.rawValue)),"
+                + "\(LogLine.csvField(line.dateString)),\(LogLine.csvField(line.timeString)),\(LogLine.csvField(line.text))"
             )
         }
         return rows.joined(separator: "\n")
@@ -489,5 +607,19 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+
+    func partitioningIndex(where predicate: (Element) -> Bool) -> Int {
+        var lower = startIndex
+        var upper = endIndex
+        while lower < upper {
+            let middle = index(lower, offsetBy: distance(from: lower, to: upper) / 2)
+            if predicate(self[middle]) {
+                lower = index(after: middle)
+            } else {
+                upper = middle
+            }
+        }
+        return lower
     }
 }

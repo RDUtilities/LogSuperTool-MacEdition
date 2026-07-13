@@ -77,8 +77,8 @@ struct TabItemView: View {
             }
 
             // Problem badge
-            if !tab.problemLines.isEmpty {
-                Text("\(tab.problemLines.count)")
+            if !tab.problemLineNumbers.isEmpty {
+                Text("\(tab.problemLineNumbers.count)")
                     .font(.system(size: 9, weight: .bold))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)

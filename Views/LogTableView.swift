@@ -12,9 +12,13 @@ struct LogTableView: View {
     var body: some View {
         ScrollViewReader { proxy in
             List(viewModel.visibleLines, id: \.lineNumber, selection: $selectedLines) { line in
-                LogRowView(line: line, viewModel: viewModel)
-                    .id(line.lineNumber)
-                    .listRowBackground(rowBackground(for: line))
+                let presentation = rowPresentation(for: line)
+                LogRowView(
+                    line: line,
+                    presentation: presentation
+                )
+                .equatable()
+                    .listRowBackground(presentation.background.color)
                     .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                     .listRowSeparator(.hidden)
             }
@@ -49,16 +53,33 @@ struct LogTableView: View {
 
     // MARK: Row background
 
-    private func rowBackground(for line: LogLine) -> some View {
-        Group {
-            if viewModel.searchMatchSet.contains(line.lineNumber) {
-                Color.yellow.opacity(0.22)
-            } else if let rule = appState.highlightRules.first(where: { $0.matches(line.text) }) {
-                rule.color
-            } else {
-                line.severity.rowBackground
-            }
+    private func rowPresentation(for line: LogLine) -> LogRowPresentation {
+        let background: LogRowBackground
+        if viewModel.navigationHighlightLines.contains(line.lineNumber) {
+            background = .navigation
+        } else if viewModel.searchMatchSet.contains(line.lineNumber) {
+            background = .search
+        } else if let rule = appState.highlightRules.first(where: { $0.matches(line.text) }) {
+            background = .custom(
+                red: rule.colorRed, green: rule.colorGreen, blue: rule.colorBlue, alpha: rule.colorAlpha
+            )
+        } else {
+            background = .severity(line.severity)
         }
+        return LogRowPresentation(
+            background: background,
+            isBookmarked: viewModel.bookmarkedLines.contains(line.lineNumber),
+            searchHighlight: viewModel.searchMatchSet.contains(line.lineNumber) ? viewModel.searchText : "",
+            isCaseSensitive: viewModel.isCaseSensitive,
+            useRegex: viewModel.useRegex,
+            showLineNumbers: viewModel.showLineNumbers,
+            showSeverity: viewModel.showSeverity,
+            showDate: viewModel.showDate,
+            showTime: viewModel.showTime,
+            wrapLines: viewModel.wrapLines,
+            fontName: appState.logFontName,
+            fontSize: appState.logFontSize
+        )
     }
 
     // MARK: Context menu actions
@@ -78,9 +99,8 @@ struct LogTableView: View {
             .filter { lineNumbers.contains($0.lineNumber) }
             .sorted { $0.lineNumber < $1.lineNumber }
             .forEach { line in
-                let msg = line.text.replacingOccurrences(of: "\"", with: "\"\"")
-                rows.append("\(line.lineNumber),\(line.severity.rawValue),"
-                           + "\"\(line.dateString)\",\"\(line.timeString)\",\"\(msg)\"")
+                rows.append("\(line.lineNumber),\(LogLine.csvField(line.severity.rawValue)),"
+                           + "\(LogLine.csvField(line.dateString)),\(LogLine.csvField(line.timeString)),\(LogLine.csvField(line.text))")
             }
         setPasteboard(rows.joined(separator: "\n"))
     }
@@ -102,22 +122,60 @@ struct LogTableView: View {
 
 // MARK: - LogRowView
 
-struct LogRowView: View {
+private enum LogRowBackground: Equatable {
+    case navigation
+    case search
+    case custom(red: Double, green: Double, blue: Double, alpha: Double)
+    case severity(LogSeverity)
+
+    var color: Color {
+        switch self {
+        case .navigation:
+            return Color.accentColor.opacity(0.38)
+        case .search:
+            return Color.yellow.opacity(0.22)
+        case let .custom(red, green, blue, alpha):
+            return Color(red: red, green: green, blue: blue, opacity: alpha)
+        case let .severity(severity):
+            return severity.rowBackground
+        }
+    }
+}
+
+private struct LogRowPresentation: Equatable {
+    let background: LogRowBackground
+    let isBookmarked: Bool
+    let searchHighlight: String
+    let isCaseSensitive: Bool
+    let useRegex: Bool
+    let showLineNumbers: Bool
+    let showSeverity: Bool
+    let showDate: Bool
+    let showTime: Bool
+    let wrapLines: Bool
+    let fontName: String
+    let fontSize: CGFloat
+}
+
+private struct LogRowView: View, Equatable {
 
     let line: LogLine
-    @ObservedObject var viewModel: LogTabViewModel
-    @EnvironmentObject var appState: AppState
+    let presentation: LogRowPresentation
+
+    static func == (lhs: LogRowView, rhs: LogRowView) -> Bool {
+        lhs.line.lineNumber == rhs.line.lineNumber && lhs.presentation == rhs.presentation
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
 
-            if viewModel.showLineNumbers {
+            if presentation.showLineNumbers {
                 ZStack(alignment: .leading) {
                     Text("\(line.lineNumber)")
                         .foregroundColor(.secondary)
                         .frame(width: 50, alignment: .trailing)
                         .monospacedDigit()
-                    if viewModel.bookmarkedLines.contains(line.lineNumber) {
+                    if presentation.isBookmarked {
                         Image(systemName: "bookmark.fill")
                             .font(.system(size: 9))
                             .foregroundColor(.orange)
@@ -127,20 +185,20 @@ struct LogRowView: View {
                 .frame(width: 50)
             }
 
-            if viewModel.showSeverity {
+            if presentation.showSeverity {
                 Text(line.severity == .none ? "" : line.severity.rawValue)
                     .frame(width: 48, alignment: .center)
                     .foregroundColor(line.severity.labelColor)
                     .fontWeight(line.severity.isProblem ? .semibold : .regular)
             }
 
-            if viewModel.showDate {
+            if presentation.showDate {
                 Text(line.dateString)
                     .frame(width: 88, alignment: .leading)
                     .foregroundColor(.secondary)
             }
 
-            if viewModel.showTime {
+            if presentation.showTime {
                 Text(line.timeString)
                     .frame(width: 90, alignment: .leading)
                     .foregroundColor(.secondary)
@@ -148,16 +206,17 @@ struct LogRowView: View {
 
             HighlightedText(
                 text:            line.text,
-                highlight:       viewModel.searchText,
-                isCaseSensitive: viewModel.isCaseSensitive,
-                useRegex:        viewModel.useRegex
+                highlight:       presentation.searchHighlight,
+                isCaseSensitive: presentation.isCaseSensitive,
+                useRegex:        presentation.useRegex
             )
-            .lineLimit(viewModel.wrapLines ? nil : 1)
+            .lineLimit(presentation.wrapLines ? nil : 1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
         }
         .padding(.vertical, 1)
-        .font(appState.logFont)
+        .font(Font(NSFont(name: presentation.fontName, size: presentation.fontSize)
+                   ?? NSFont.monospacedSystemFont(ofSize: presentation.fontSize, weight: .regular)))
     }
 }

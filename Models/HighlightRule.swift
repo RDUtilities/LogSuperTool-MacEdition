@@ -1,6 +1,26 @@
 import SwiftUI
 import Foundation
 
+enum LogRegex {
+    private static let cache: NSCache<NSString, NSRegularExpression> = {
+        let cache = NSCache<NSString, NSRegularExpression>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    static func expression(pattern: String, isCaseSensitive: Bool) -> NSRegularExpression? {
+        let key = "\(isCaseSensitive ? "s" : "i"):\(pattern)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+
+        let options: NSRegularExpression.Options = isCaseSensitive ? [] : .caseInsensitive
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return nil
+        }
+        cache.setObject(expression, forKey: key)
+        return expression
+    }
+}
+
 // MARK: - HighlightRule
 
 struct HighlightRule: Codable, Identifiable {
@@ -37,10 +57,7 @@ struct HighlightRule: Codable, Identifiable {
     func matches(_ text: String) -> Bool {
         guard isEnabled, !pattern.isEmpty else { return false }
         if useRegex {
-            guard let rx = try? NSRegularExpression(
-                pattern: pattern,
-                options: isCaseSensitive ? [] : .caseInsensitive
-            ) else { return false }
+            guard let rx = LogRegex.expression(pattern: pattern, isCaseSensitive: isCaseSensitive) else { return false }
             let ns = text as NSString
             return rx.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) != nil
         } else {

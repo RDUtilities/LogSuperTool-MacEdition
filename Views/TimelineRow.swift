@@ -10,6 +10,7 @@ struct TimelineRow: View {
     @State private var jumpLine:     String = ""
     @State private var jumpTime:     String = ""
     @State private var jumpDate:     String = ""
+    @State private var timelineNavigationTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -21,11 +22,9 @@ struct TimelineRow: View {
 
             Slider(value: $sliderValue, in: 0...1)
                 .frame(minWidth: 120, maxWidth: 260)
-                .disabled(viewModel.timestampedLines.isEmpty)
-                .onChange(of: sliderValue) { newValue in
-                    viewModel.navigateTimeline(newValue)
-                }
-                .help(viewModel.timestampedLines.isEmpty
+                .disabled(viewModel.timestampedLineNumbers.isEmpty)
+                .onChange(of: sliderValue) { _ in scheduleTimelineNavigation() }
+                .help(viewModel.timestampedLineNumbers.isEmpty
                       ? "No timestamps detected in this file"
                       : "Drag to navigate by time")
 
@@ -40,6 +39,10 @@ struct TimelineRow: View {
                 .frame(width: 68)
                 .multilineTextAlignment(.center)
                 .onSubmit { commitJumpLine() }
+            Button("Go") { commitJumpLine() }
+                .controlSize(.small)
+                .disabled(Int(jumpLine.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+                .help("Go to the requested line")
 
             // ── Jump to time ──────────────────────────────────────────────
             Text("Time:")
@@ -49,21 +52,25 @@ struct TimelineRow: View {
             TextField("HH:mm:ss", text: $jumpTime)
                 .frame(width: 82)
                 .multilineTextAlignment(.center)
-                .onSubmit {
-                    viewModel.jumpToTime(jumpTime)
-                }
+                .onSubmit { commitJumpTime() }
+            Button("Go") { commitJumpTime() }
+                .controlSize(.small)
+                .disabled(jumpTime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Go to the first matching time")
 
             // ── Jump to date ──────────────────────────────────────────────
             Text("Date:")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            TextField("yyyy-MM-dd", text: $jumpDate)
+            TextField("yyyy-MM or yyyy-MM-dd", text: $jumpDate)
                 .frame(width: 96)
                 .multilineTextAlignment(.center)
-                .onSubmit {
-                    viewModel.jumpToDate(jumpDate)
-                }
+                .onSubmit { commitJumpDate() }
+            Button("Go") { commitJumpDate() }
+                .controlSize(.small)
+                .disabled(jumpDate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Go to the first matching date or date prefix")
 
             Spacer()
         }
@@ -72,6 +79,28 @@ struct TimelineRow: View {
     }
 
     private func commitJumpLine() {
-        if let n = Int(jumpLine) { viewModel.jumpToLine(n) }
+        if let n = Int(jumpLine.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            viewModel.jumpToLine(n)
+        }
+    }
+
+    private func commitJumpTime() {
+        viewModel.jumpToTime(jumpTime)
+    }
+
+    private func commitJumpDate() {
+        viewModel.jumpToDate(jumpDate)
+    }
+
+    /// A Slider can emit dozens of values per second. Coalescing them avoids
+    /// repeatedly asking ScrollViewReader to resolve a position in a large log.
+    private func scheduleTimelineNavigation() {
+        timelineNavigationTask?.cancel()
+        let position = sliderValue
+        timelineNavigationTask = Task {
+            try? await Task.sleep(nanoseconds: 75_000_000)
+            guard !Task.isCancelled else { return }
+            viewModel.navigateTimeline(position)
+        }
     }
 }
