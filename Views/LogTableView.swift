@@ -78,9 +78,8 @@ struct LogTableView: View {
             .filter { lineNumbers.contains($0.lineNumber) }
             .sorted { $0.lineNumber < $1.lineNumber }
             .forEach { line in
-                let msg = line.text.replacingOccurrences(of: "\"", with: "\"\"")
-                rows.append("\(line.lineNumber),\(line.severity.rawValue),"
-                           + "\"\(line.dateString)\",\"\(line.timeString)\",\"\(msg)\"")
+                rows.append("\(line.lineNumber),\(LogLine.csvField(line.severity.rawValue)),"
+                           + "\(LogLine.csvField(line.dateString)),\(LogLine.csvField(line.timeString)),\(LogLine.csvField(line.text))")
             }
         setPasteboard(rows.joined(separator: "\n"))
     }

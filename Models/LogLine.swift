@@ -58,3 +58,16 @@ struct LogLine: Identifiable, Sendable {
         self.timeString = timeString
     }
 }
+
+extension LogLine {
+    static func csvField(_ value: String) -> String {
+        let firstNonWhitespace = value.drop(while: { $0 == " " || $0 == "\t" })
+        let safeValue: String
+        if let first = firstNonWhitespace.first, ["=", "+", "-", "@"].contains(first) {
+            safeValue = "'" + value
+        } else {
+            safeValue = value
+        }
+        return "\"\(safeValue.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+}

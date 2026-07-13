@@ -5,6 +5,7 @@ import Foundation
 struct LineBatch: Sendable {
     let lines:     [LogLine]
     let bytesRead: Int64   // cumulative bytes read so far in this stream
+    let tailOffset: Int64  // first byte that has not been committed as a full line
 }
 
 // MARK: - TailReadBatch
@@ -13,6 +14,11 @@ struct TailReadBatch {
     let nextOffset:   Int64
     let lines:        [LogLine]
     let wasTruncated: Bool
+}
+
+private struct ParsedTailLines {
+    let lines: [LogLine]
+    let consumedByteCount: Int
 }
 
 // MARK: - LogFileLoader
@@ -46,7 +52,8 @@ final class LogFileLoader: @unchecked Sendable {
     /// Stream lines from a large file in batches without ever loading the whole
     /// file as a String.  Yields LineBatch values (~10 000 lines each) so the
     /// UI can display the first results within milliseconds and show progress.
-    func streamLines(from url: URL) -> AsyncThrowingStream<LineBatch, Error> {
+    func streamLines(from url: URL,
+                     deferUnterminatedFinalLine: Bool = false) -> AsyncThrowingStream<LineBatch, Error> {
         AsyncThrowingStream { continuation in
             Task.detached(priority: .userInitiated) {
                 let formatters = LogFileLoader.makeDateFormatters()
@@ -89,7 +96,12 @@ final class LogFileLoader: @unchecked Sendable {
                             lineNumber += 1
 
                             if batch.count >= LogFileLoader.streamBatchSize {
-                                continuation.yield(LineBatch(lines: batch, bytesRead: bytesRead))
+                                let uncommittedBytes = pending.distance(from: start, to: pending.endIndex)
+                                continuation.yield(LineBatch(
+                                    lines: batch,
+                                    bytesRead: bytesRead,
+                                    tailOffset: bytesRead - Int64(uncommittedBytes)
+                                ))
                                 batch = []
                                 batch.reserveCapacity(LogFileLoader.streamBatchSize)
                             }
@@ -100,8 +112,11 @@ final class LogFileLoader: @unchecked Sendable {
                         }
                     }
 
-                    // Handle final partial line (file not ending with \n)
-                    if !pending.isEmpty,
+                    let completedOffset = bytesRead - Int64(pending.count)
+                    // When tailing, retain an unterminated record until its newline
+                    // arrives so a writer's partial append never becomes two rows.
+                    if !deferUnterminatedFinalLine,
+                       !pending.isEmpty,
                        let raw = String(bytes: pending, encoding: .utf8)
                               ?? String(bytes: pending, encoding: .isoLatin1) {
                         let text = raw.last == "\r" ? String(raw.dropLast()) : raw
@@ -114,7 +129,13 @@ final class LogFileLoader: @unchecked Sendable {
                         }
                     }
 
-                    if !batch.isEmpty { continuation.yield(LineBatch(lines: batch, bytesRead: bytesRead)) }
+                    if !batch.isEmpty || deferUnterminatedFinalLine {
+                        continuation.yield(LineBatch(
+                            lines: batch,
+                            bytesRead: bytesRead,
+                            tailOffset: deferUnterminatedFinalLine ? completedOffset : bytesRead
+                        ))
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -137,8 +158,8 @@ final class LogFileLoader: @unchecked Sendable {
                 fh.seek(toFileOffset: 0)
                 let data = fh.readDataToEndOfFile()
                 fh.closeFile()
-                let lines = LogFileLoader.parseBytes(data, startLine: 1, formatters: formatters)
-                return TailReadBatch(nextOffset: size, lines: lines, wasTruncated: true)
+                let parsed = LogFileLoader.parseCompleteLines(data, startLine: 1, formatters: formatters)
+                return TailReadBatch(nextOffset: Int64(parsed.consumedByteCount), lines: parsed.lines, wasTruncated: true)
             }
             guard offset < size else {
                 fh.closeFile()
@@ -147,15 +168,19 @@ final class LogFileLoader: @unchecked Sendable {
             fh.seek(toFileOffset: UInt64(offset))
             let data = fh.readDataToEndOfFile()
             fh.closeFile()
-            let lines = LogFileLoader.parseBytes(data, startLine: startLineNumber, formatters: formatters)
-            return TailReadBatch(nextOffset: size, lines: lines, wasTruncated: false)
+            let parsed = LogFileLoader.parseCompleteLines(data, startLine: startLineNumber, formatters: formatters)
+            return TailReadBatch(
+                nextOffset: offset + Int64(parsed.consumedByteCount),
+                lines: parsed.lines,
+                wasTruncated: false
+            )
         }.value
     }
 
     // MARK: - Private helpers
 
-    private static func parseBytes(_ data: Data, startLine: Int,
-                                   formatters: [DateFormatter]) -> [LogLine] {
+    private static func parseCompleteLines(_ data: Data, startLine: Int,
+                                           formatters: [DateFormatter]) -> ParsedTailLines {
         var result = [LogLine]()
         var lineNumber = startLine
         var start = data.startIndex
@@ -176,20 +201,10 @@ final class LogFileLoader: @unchecked Sendable {
                                   dateString: dateS, timeString: timeS))
             lineNumber += 1
         }
-        let remaining = data[start...]
-        if !remaining.isEmpty,
-           let raw = String(bytes: remaining, encoding: .utf8)
-                  ?? String(bytes: remaining, encoding: .isoLatin1) {
-            let text = raw.last == "\r" ? String(raw.dropLast()) : raw
-            if !text.isEmpty {
-                let sev = detectSeverity(text)
-                let (ts, dateS, timeS) = extractTimestamp(text, formatters: formatters)
-                result.append(LogLine(lineNumber: lineNumber, text: text,
-                                      severity: sev, timestamp: ts,
-                                      dateString: dateS, timeString: timeS))
-            }
-        }
-        return result
+        return ParsedTailLines(
+            lines: result,
+            consumedByteCount: data.distance(from: data.startIndex, to: start)
+        )
     }
 
     private static func detectSeverity(_ text: String) -> LogSeverity {

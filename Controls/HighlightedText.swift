@@ -51,9 +51,7 @@ struct HighlightedText: View {
     }
 
     private func regexRanges() -> [Range<String.Index>] {
-        var opts: NSRegularExpression.Options = []
-        if !isCaseSensitive { opts.insert(.caseInsensitive) }
-        guard let rx = try? NSRegularExpression(pattern: highlight, options: opts) else { return [] }
+        guard let rx = LogRegex.expression(pattern: highlight, isCaseSensitive: isCaseSensitive) else { return [] }
 
         let ns      = text as NSString
         let nsRange = NSRange(location: 0, length: ns.length)

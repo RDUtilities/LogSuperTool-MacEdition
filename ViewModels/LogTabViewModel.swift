@@ -92,6 +92,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private var tailTask: Task<Void, Never>?
     private var filterTask: Task<Void, Never>?
     private var lastOffset: Int64 = 0
+    private var operationID = UUID()
 
     // MARK: - Init
 
@@ -101,6 +102,9 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     // MARK: - File Operations
 
     func loadFile(url: URL) async {
+        let operationID = UUID()
+        self.operationID = operationID
+        let resumeTailing = isTailing
         loadTask?.cancel()
         filterTask?.cancel()
         stopTailing()
@@ -122,9 +126,13 @@ final class LogTabViewModel: ObservableObject, Identifiable {
             loadError = nil
             do {
                 var isFirstBatch = true
-                for try await batch in loader.streamLines(from: url) {
-                    guard !Task.isCancelled else { break }
+                for try await batch in loader.streamLines(
+                    from: url,
+                    deferUnterminatedFinalLine: resumeTailing
+                ) {
+                    guard !Task.isCancelled, operationID == self.operationID else { return }
                     allLines.append(contentsOf: batch.lines)
+                    lastOffset = batch.tailOffset
                     if totalBytes > 0 {
                         loadProgress = min(Double(batch.bytesRead) / Double(totalBytes), 0.99)
                     }
@@ -133,17 +141,21 @@ final class LogTabViewModel: ObservableObject, Identifiable {
                         applySearchAndFilter()
                     }
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, operationID == self.operationID else { return }
                 loadProgress = 1.0
                 applySearchAndFilter()
                 rebuildProblemLines()
                 rebuildTimestampedLines()
             } catch {
-                loadError = error.localizedDescription
-                print("[LogTabViewModel] load error: \(error)")
+                if operationID == self.operationID {
+                    loadError = error.localizedDescription
+                    print("[LogTabViewModel] load error: \(error)")
+                }
             }
-            lastOffset = fileSizeOf(url)
-            isLoading  = false
+            guard operationID == self.operationID else { return }
+            if !resumeTailing { lastOffset = fileSizeOf(url) }
+            isLoading = false
+            if resumeTailing && !Task.isCancelled { startTailLoop(operationID: operationID) }
         }
         await loadTask?.value
     }
@@ -154,6 +166,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     }
 
     func closeFile() {
+        operationID = UUID()
         loadTask?.cancel()
         filterTask?.cancel()
         stopTailing()
@@ -223,15 +236,28 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         await Task.detached(priority: .userInitiated) {
             var result = snap.lines
 
+            let filterRegex = snap.useRegex && !snap.filterText.isEmpty
+                ? LogRegex.expression(pattern: snap.filterText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
+            let excludeRegex = snap.useRegex && !snap.excludeText.isEmpty
+                ? LogRegex.expression(pattern: snap.excludeText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
+            let searchRegex = snap.useRegex && !snap.searchText.isEmpty
+                ? LogRegex.expression(pattern: snap.searchText, isCaseSensitive: snap.isCaseSensitive)
+                : nil
+
+            // An invalid regex must not silently become a literal filter.
+            if snap.useRegex && ((!snap.filterText.isEmpty && filterRegex == nil)
+                || (!snap.excludeText.isEmpty && excludeRegex == nil)) {
+                return FilterResult(lines: [], matchSet: [])
+            }
+
             if snap.onlyErrors {
                 result = result.filter { $0.severity.isProblem }
             }
 
             if !snap.filterText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.filterText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
+                if snap.useRegex, let rx = filterRegex {
                     result = result.filter { line in
                         let ns = line.text as NSString
                         return rx.firstMatch(in: line.text,
@@ -246,10 +272,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
             // Exclude filter — remove lines that match
             if !snap.excludeText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.excludeText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
+                if snap.useRegex, let rx = excludeRegex {
                     result = result.filter { line in
                         let ns = line.text as NSString
                         return rx.firstMatch(in: line.text,
@@ -264,15 +287,14 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
             var matchSet = Set<Int>()
             if !snap.searchText.isEmpty {
-                if snap.useRegex,
-                   let rx = try? NSRegularExpression(
-                       pattern: snap.searchText,
-                       options: snap.isCaseSensitive ? [] : .caseInsensitive) {
-                    for line in result {
-                        let ns = line.text as NSString
-                        if rx.firstMatch(in: line.text,
-                                         range: NSRange(location: 0, length: ns.length)) != nil {
-                            matchSet.insert(line.lineNumber)
+                if snap.useRegex {
+                    if let rx = searchRegex {
+                        for line in result {
+                            let ns = line.text as NSString
+                            if rx.firstMatch(in: line.text,
+                                             range: NSRange(location: 0, length: ns.length)) != nil {
+                                matchSet.insert(line.lineNumber)
+                            }
                         }
                     }
                 } else {
@@ -286,12 +308,6 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
             return FilterResult(lines: result, matchSet: matchSet)
         }.value
-    }
-
-    private func makeRegex(_ pattern: String) -> NSRegularExpression? {
-        var opts: NSRegularExpression.Options = []
-        if !isCaseSensitive { opts.insert(.caseInsensitive) }
-        return try? NSRegularExpression(pattern: pattern, options: opts)
     }
 
     // MARK: - Search Navigation
@@ -350,6 +366,38 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         timestampedLines = allLines.filter { $0.timestamp != nil }
     }
 
+    private func updateDerivedStateAfterTailAppend(_ lines: [LogLine]) {
+        guard !lines.isEmpty else { return }
+
+        problemLines.append(contentsOf: lines.filter { $0.severity.isProblem })
+        timestampedLines.append(contentsOf: lines.filter { $0.timestamp != nil })
+
+        if !filterText.isEmpty || !excludeText.isEmpty || onlyErrors {
+            applySearchAndFilter()
+            return
+        }
+
+        visibleLines.append(contentsOf: lines)
+        guard !searchText.isEmpty else { return }
+
+        let matches: (LogLine) -> Bool
+        if useRegex {
+            guard let regex = LogRegex.expression(pattern: searchText, isCaseSensitive: isCaseSensitive) else { return }
+            matches = { line in
+                let range = NSRange(location: 0, length: (line.text as NSString).length)
+                return regex.firstMatch(in: line.text, range: range) != nil
+            }
+        } else {
+            let options: String.CompareOptions = isCaseSensitive ? [.literal] : [.caseInsensitive, .literal]
+            matches = { $0.text.range(of: self.searchText, options: options) != nil }
+        }
+
+        for line in lines where matches(line) {
+            searchMatchSet.insert(line.lineNumber)
+        }
+        searchMatchCount = searchMatchSet.count
+    }
+
     func navigateTimeline(_ position: Double) {
         guard !timestampedLines.isEmpty else { return }
         let idx = min(Int(position * Double(timestampedLines.count - 1)),
@@ -381,32 +429,39 @@ final class LogTabViewModel: ObservableObject, Identifiable {
 
     private func startTailing() {
         guard let url = fileURL else { return }
+        Task { await loadFile(url: url) }
+    }
+
+    private func startTailLoop(operationID: UUID) {
+        guard let url = fileURL, isTailing else { return }
         tailTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                guard !Task.isCancelled else { break }
+                guard !Task.isCancelled, operationID == self.operationID else { break }
                 do {
                     let batch = try await loader.readAppendedLines(
                         from:            url,
                         offset:          lastOffset,
                         startLineNumber: (allLines.last?.lineNumber ?? 0) + 1
                     )
-                    guard !Task.isCancelled else { break }
+                    guard !Task.isCancelled, operationID == self.operationID else { break }
 
                     if batch.wasTruncated {
                         allLines   = batch.lines
                         lastOffset = batch.nextOffset
-                    } else if !batch.lines.isEmpty {
-                        allLines.append(contentsOf: batch.lines)
+                        applySearchAndFilter()
+                        rebuildProblemLines()
+                        rebuildTimestampedLines()
+                    } else {
                         lastOffset = batch.nextOffset
-                        for line in batch.lines where line.severity.isProblem {
-                            newProblemDetected?(line)
+                        if !batch.lines.isEmpty {
+                            allLines.append(contentsOf: batch.lines)
+                            for line in batch.lines where line.severity.isProblem {
+                                newProblemDetected?(line)
+                            }
+                            updateDerivedStateAfterTailAppend(batch.lines)
                         }
                     }
-
-                    applySearchAndFilter()
-                    rebuildProblemLines()
-                    rebuildTimestampedLines()
 
                     if autoScroll, let last = visibleLines.last {
                         scrollToLineRequested?(last.lineNumber)
@@ -468,10 +523,9 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     func exportCSV() -> String {
         var rows = ["Line,Severity,Date,Time,Message"]
         for line in visibleLines {
-            let msg = line.text.replacingOccurrences(of: "\"", with: "\"\"")
             rows.append(
-                "\(line.lineNumber),\(line.severity.rawValue),"
-                + "\"\(line.dateString)\",\"\(line.timeString)\",\"\(msg)\""
+                "\(line.lineNumber),\(LogLine.csvField(line.severity.rawValue)),"
+                + "\(LogLine.csvField(line.dateString)),\(LogLine.csvField(line.timeString)),\(LogLine.csvField(line.text))"
             )
         }
         return rows.joined(separator: "\n")
