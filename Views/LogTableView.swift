@@ -51,7 +51,9 @@ struct LogTableView: View {
 
     private func rowBackground(for line: LogLine) -> some View {
         Group {
-            if viewModel.searchMatchSet.contains(line.lineNumber) {
+            if viewModel.navigationHighlightLines.contains(line.lineNumber) {
+                Color.accentColor.opacity(0.38)
+            } else if viewModel.searchMatchSet.contains(line.lineNumber) {
                 Color.yellow.opacity(0.22)
             } else if let rule = appState.highlightRules.first(where: { $0.matches(line.text) }) {
                 rule.color

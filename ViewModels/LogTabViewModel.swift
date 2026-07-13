@@ -49,6 +49,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     @Published private(set) var searchMatchCount:       Int      = 0
     @Published private(set) var searchMatchSet:         Set<Int> = []
     @Published private(set) var currentSearchMatchIndex: Int     = -1
+    @Published private(set) var navigationHighlightLines: Set<Int> = []
     private var searchMatchLineNumbers: [Int] = []
 
     // MARK: Selection
@@ -95,6 +96,7 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private var operationID = UUID()
     private var firstLineByTime: [String: Int] = [:]
     private var firstLineByDate: [String: Int] = [:]
+    private var navigationHighlightTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -120,6 +122,8 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         searchMatchSet   = []
         searchMatchCount = 0
         searchMatchLineNumbers = []
+        navigationHighlightLines = []
+        navigationHighlightTask?.cancel()
         problemLineNumbers = []
         timestampedLineNumbers = []
         firstLineByTime = [:]
@@ -182,6 +186,8 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         searchMatchSet   = []
         searchMatchCount = 0
         searchMatchLineNumbers = []
+        navigationHighlightLines = []
+        navigationHighlightTask?.cancel()
         problemLineNumbers = []
         timestampedLineNumbers = []
         firstLineByTime = [:]
@@ -410,32 +416,34 @@ final class LogTabViewModel: ObservableObject, Identifiable {
         guard !timestampedLineNumbers.isEmpty else { return }
         let idx = min(Int(position * Double(timestampedLineNumbers.count - 1)),
                       timestampedLineNumbers.count - 1)
-        scrollToLineRequested?(timestampedLineNumbers[max(0, idx)])
+        navigate(to: timestampedLineNumbers[max(0, idx)])
     }
 
     func jumpToLine(_ lineNumber: Int) {
         guard !visibleLines.isEmpty else { return }
         let insertion = visibleLines.partitioningIndex { $0.lineNumber < lineNumber }
         if insertion < visibleLines.count, visibleLines[insertion].lineNumber == lineNumber {
-            scrollToLineRequested?(lineNumber)
+            navigate(to: lineNumber)
         } else if insertion == 0 {
-            scrollToLineRequested?(visibleLines[0].lineNumber)
+            navigate(to: visibleLines[0].lineNumber)
         } else if insertion == visibleLines.count {
-            scrollToLineRequested?(visibleLines[visibleLines.count - 1].lineNumber)
+            navigate(to: visibleLines[visibleLines.count - 1].lineNumber)
         } else {
             let previous = visibleLines[insertion - 1].lineNumber
             let next = visibleLines[insertion].lineNumber
-            scrollToLineRequested?(abs(previous - lineNumber) <= abs(next - lineNumber) ? previous : next)
+            navigate(to: abs(previous - lineNumber) <= abs(next - lineNumber) ? previous : next)
         }
     }
 
     func jumpToTime(_ timeString: String) {
-        guard let lineNumber = firstLineByTime[timeString] else { return }
+        let key = timeString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lineNumber = firstLineByTime[key] else { return }
         jumpToLine(lineNumber)
     }
 
     func jumpToDate(_ dateString: String) {
-        guard let lineNumber = firstLineByDate[dateString] else { return }
+        let key = dateString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lineNumber = firstLineByDate[key] else { return }
         jumpToLine(lineNumber)
     }
 
@@ -490,6 +498,19 @@ final class LogTabViewModel: ObservableObject, Identifiable {
     private func stopTailing() {
         tailTask?.cancel()
         tailTask = nil
+    }
+
+    /// Scroll to a record and make the destination obvious without changing
+    /// the user's saved highlights or search results.
+    private func navigate(to lineNumber: Int) {
+        navigationHighlightTask?.cancel()
+        navigationHighlightLines = [lineNumber]
+        scrollToLineRequested?(lineNumber)
+        navigationHighlightTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.navigationHighlightLines = []
+        }
     }
 
     private func rebuildJumpIndexes() {

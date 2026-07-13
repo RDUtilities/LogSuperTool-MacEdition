@@ -40,6 +40,10 @@ struct TimelineRow: View {
                 .frame(width: 68)
                 .multilineTextAlignment(.center)
                 .onSubmit { commitJumpLine() }
+            Button("Go") { commitJumpLine() }
+                .controlSize(.small)
+                .disabled(Int(jumpLine.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+                .help("Go to the requested line")
 
             // ── Jump to time ──────────────────────────────────────────────
             Text("Time:")
@@ -49,9 +53,11 @@ struct TimelineRow: View {
             TextField("HH:mm:ss", text: $jumpTime)
                 .frame(width: 82)
                 .multilineTextAlignment(.center)
-                .onSubmit {
-                    viewModel.jumpToTime(jumpTime)
-                }
+                .onSubmit { commitJumpTime() }
+            Button("Go") { commitJumpTime() }
+                .controlSize(.small)
+                .disabled(jumpTime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Go to the first matching time")
 
             // ── Jump to date ──────────────────────────────────────────────
             Text("Date:")
@@ -61,9 +67,11 @@ struct TimelineRow: View {
             TextField("yyyy-MM-dd", text: $jumpDate)
                 .frame(width: 96)
                 .multilineTextAlignment(.center)
-                .onSubmit {
-                    viewModel.jumpToDate(jumpDate)
-                }
+                .onSubmit { commitJumpDate() }
+            Button("Go") { commitJumpDate() }
+                .controlSize(.small)
+                .disabled(jumpDate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Go to the first matching date")
 
             Spacer()
         }
@@ -72,6 +80,16 @@ struct TimelineRow: View {
     }
 
     private func commitJumpLine() {
-        if let n = Int(jumpLine) { viewModel.jumpToLine(n) }
+        if let n = Int(jumpLine.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            viewModel.jumpToLine(n)
+        }
+    }
+
+    private func commitJumpTime() {
+        viewModel.jumpToTime(jumpTime)
+    }
+
+    private func commitJumpDate() {
+        viewModel.jumpToDate(jumpDate)
     }
 }
